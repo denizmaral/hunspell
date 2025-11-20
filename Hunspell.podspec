@@ -4,7 +4,7 @@ Pod::Spec.new do |s|
   s.summary      = 'Hunspell spell checker library for iOS'
   s.description  = 'Hunspell is a spell checker and morphological analyzer library and program designed for languages with rich morphology and complex word compounding or character encoding.'
   s.homepage     = 'https://github.com/denizmaral/hunspell'
-  s.license      = { :type => 'LGPL-2.1', :file => 'COPYING.LGPL' }
+  s.license      = 'GPL/LPLG/MPL'
   s.author       = { 'Deniz Maral' => 'dnzmaral@gmail.com' }
   s.source       = { :git => 'https://github.com/denizmaral/hunspell.git', :tag => "v#{s.version}" }
   
