@@ -15,7 +15,7 @@ Pod::Spec.new do |s|
   s.source_files = 'src/hunspell/*.{cxx,hxx,h}'
   
   # Public headers
-  s.public_header_files = 'src/hunspell/hunspell.hxx', 'src/hunspell/hunspell.h'
+  s.public_header_files = "*.{h,hxx}"
   
   # Compiler flags for C++
   s.xcconfig = {
@@ -23,6 +23,7 @@ Pod::Spec.new do |s|
     'CLANG_CXX_LIBRARY' => 'libc++'
   }
   
-  s.requires_arc = false
-  s.libraries = 'c++'
+  s.requires_arc = true
+  s.frameworks = 'Foundation'
+  s.library = 'c++'
 end
