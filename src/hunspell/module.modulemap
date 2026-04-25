@@ -1,0 +1,12 @@
+// SwiftPM module map for Hunspell's C API.
+//
+// Only `hunspell.h` is exposed — it transitively pulls in `hunvisapi.h` via
+// #include. The .hxx C++ headers in this directory are compiled internally
+// as part of the .cxx implementation but are NOT visible to Swift.
+//
+// Swift consumers `import CHunspell` and call the Hunspell_* free functions.
+
+module CHunspell {
+    header "hunspell.h"
+    export *
+}
