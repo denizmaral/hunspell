@@ -39,11 +39,12 @@ gl_VISIBILITY
 # Checks for library functions.
 
 dnl internationalization macros
-AM_GNU_GETTEXT_VERSION(0.18)
+AM_GNU_GETTEXT_VERSION(0.20)
 AM_GNU_GETTEXT([external])
 
 AC_ARG_WITH(warnings,[  --with-warnings         compile with warning messages],[
 	AC_DEFINE(HUNSPELL_WARNING_ON,1,"Define if you need warning messages")
+	CPPFLAGS="$CPPFLAGS -DHUNSPELL_WARNING_ON"
 ])
 
 CURSESLIB=""

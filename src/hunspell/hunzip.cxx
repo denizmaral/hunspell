@@ -191,7 +191,7 @@ int Hunzip::getbuf() {
         }
         out[o++] = dec[oldp].c[0];
         out[o++] = dec[oldp].c[1];
-        if (o == BUFSIZE)
+        if (o >= BUFSIZE)
           return o;
         p = dec[p].v[b];
       }
@@ -247,10 +247,20 @@ bool Hunzip::getline(std::string& dest) {
       bufsiz = fin.is_open() ? getbuf() : -1;
     }
   }
-  if (right)
-    strcpy(linebuf + l - 1, line + strlen(line) - right - 1);
-  else
+  // append suffix from previous line
+  if (right) {
+    size_t prev_len = strlen(line);
+    size_t n = right + 1;
+    if (prev_len < n || l + n >= BUFSIZE)
+      return false;
+    strcpy(linebuf + l - 1, line + prev_len - n);
+  } else {
     linebuf[l] = '\0';
+  }
+
+  // copy into line with left-offset from previous line preserved
+  if (left + strlen(linebuf) >= sizeof(line))
+    return false;
   strcpy(line + left, linebuf);
   dest.assign(line);
   return true;

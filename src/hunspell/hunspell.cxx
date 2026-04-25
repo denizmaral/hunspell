@@ -101,9 +101,10 @@ public:
   int get_langnum() const;
   bool input_conv(const std::string& word, std::string& dest);
   bool spell(const std::string& word, std::vector<std::string>& candidate_stack,
-             int* info = NULL, std::string* root = NULL);
+             int* info = NULL, std::string* root = NULL,
+             std::chrono::steady_clock::time_point suggest_start = std::chrono::steady_clock::time_point::max());
   std::vector<std::string> suggest(const std::string& word);
-  std::vector<std::string> suggest(const std::string& word, std::vector<std::string>& suggest_candidate_stack);
+  std::vector<std::string> suggest(const std::string& word, std::vector<std::string>& suggest_candidate_stack, std::chrono::steady_clock::time_point suggest_start);
   const std::string& get_wordchars_cpp() const;
   const std::vector<w_char>& get_wordchars_utf16() const;
   const std::string& get_dict_encoding() const;
@@ -143,11 +144,13 @@ private:
 private:
   std::vector<std::string> analyze_internal(const std::string& word);
   bool spell_internal(const std::string& word, std::vector<std::string>& candidate_stack,
-                      int* info = NULL, std::string* root = NULL);
+                      int* info = NULL, std::string* root = NULL,
+                      std::chrono::steady_clock::time_point suggest_start = std::chrono::steady_clock::time_point::max());
   std::vector<std::string> suggest_internal(const std::string& word,
                                             std::vector<std::string>& spell_candidate_stack,
                                             std::vector<std::string>& suggest_candidate_stack,
-                                            bool& capitalized, size_t& abbreviated, int& captype);
+                                            bool& capitalized, size_t& abbreviated, int& captype,
+                                            std::chrono::steady_clock::time_point suggest_start);
   void cleanword(std::string& dest, const std::string&, int* pcaptype, int* pabbrev);
   size_t cleanword2(std::string& dest,
                     std::vector<w_char>& dest_u,
@@ -160,10 +163,12 @@ private:
   int mkinitsmall2(std::string& u8, std::vector<w_char>& u16);
   void mkallcap(std::string& u8);
   int mkallsmall2(std::string& u8, std::vector<w_char>& u16);
-  struct hentry* checkword(const std::string& source, int* info, std::string* root);
+  struct hentry* checkword(const std::string& source, int* info, std::string* root,
+                           std::chrono::steady_clock::time_point suggest_start = std::chrono::steady_clock::time_point::max());
   std::string sharps_u8_l1(const std::string& source);
   hentry*
-  spellsharps(std::string& base, size_t start_pos, int, int, int* info, std::string* root);
+  spellsharps(std::string& base, size_t start_pos, int, int, int* info, std::string* root,
+              std::chrono::steady_clock::time_point suggest_start = std::chrono::steady_clock::time_point::max());
   int is_keepcase(const hentry* rv);
   void insert_sug(std::vector<std::string>& slst, const std::string& word);
   void cat_result(std::string& result, const std::string& st);
@@ -405,24 +410,25 @@ hentry* HunspellImpl::spellsharps(std::string& base,
                               int n,
                               int repnum,
                               int* info,
-                              std::string* root) {
+                              std::string* root,
+                              std::chrono::steady_clock::time_point suggest_start) {
   size_t pos = base.find("ss", n_pos);
   if (pos != std::string::npos && (n < MAXSHARPS)) {
     base[pos] = '\xC3';
     base[pos + 1] = '\x9F';
-    hentry* h = spellsharps(base, pos + 2, n + 1, repnum + 1, info, root);
+    hentry* h = spellsharps(base, pos + 2, n + 1, repnum + 1, info, root, suggest_start);
     if (h)
       return h;
     base[pos] = 's';
     base[pos + 1] = 's';
-    h = spellsharps(base, pos + 2, n + 1, repnum, info, root);
+    h = spellsharps(base, pos + 2, n + 1, repnum, info, root, suggest_start);
     if (h)
       return h;
   } else if (repnum > 0) {
     if (utf8)
-      return checkword(base, info, root);
+      return checkword(base, info, root, suggest_start);
     std::string tmp(sharps_u8_l1(base));
-    return checkword(tmp, info, root);
+    return checkword(tmp, info, root, suggest_start);
   }
   return NULL;
 }
@@ -438,13 +444,18 @@ void HunspellImpl::insert_sug(std::vector<std::string>& slst, const std::string&
 }
 
 bool HunspellImpl::spell(const std::string& word, std::vector<std::string>& candidate_stack,
-                         int* info, std::string* root) {
+                         int* info, std::string* root,
+                         std::chrono::steady_clock::time_point suggest_start) {
   // something very broken if spell ends up calling itself with the same word
   if (std::find(candidate_stack.begin(), candidate_stack.end(), word) != candidate_stack.end())
     return false;
 
+  // ofz#42529814 prevent deeply nested wordbreak recursion
+  if (candidate_stack.size() >= MAXBREAKDEPTH)
+    return false;
+
   candidate_stack.push_back(word);
-  bool r = spell_internal(word, candidate_stack, info, root);
+  bool r = spell_internal(word, candidate_stack, info, root, suggest_start);
   candidate_stack.pop_back();
 
   if (r && root) {
@@ -461,7 +472,8 @@ bool HunspellImpl::spell(const std::string& word, std::vector<std::string>& cand
 }
 
 bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::string>& candidate_stack,
-                                  int* info, std::string* root) {
+                                  int* info, std::string* root,
+                                  std::chrono::steady_clock::time_point suggest_start) {
   struct hentry* rv = NULL;
 
   int info2 = 0;
@@ -541,22 +553,22 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
       *info |= SPELL_ORIGCAP;
     /* FALLTHROUGH */
     case NOCAP:
-      rv = checkword(scw, info, root);
+      rv = checkword(scw, info, root, suggest_start);
       if ((abbv) && !(rv)) {
         std::string u8buffer(scw);
         u8buffer.push_back('.');
-        rv = checkword(u8buffer, info, root);
+        rv = checkword(u8buffer, info, root, suggest_start);
       }
       break;
     case ALLCAP: {
       *info |= SPELL_ORIGCAP;
-      rv = checkword(scw, info, root);
+      rv = checkword(scw, info, root, suggest_start);
       if (rv)
         break;
       if (abbv) {
         std::string u8buffer(scw);
         u8buffer.push_back('.');
-        rv = checkword(u8buffer, info, root);
+        rv = checkword(u8buffer, info, root, suggest_start);
         if (rv)
           break;
       }
@@ -577,18 +589,18 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
             scw = part1 + part2;
             sunicw = part1u;
             sunicw.insert(sunicw.end(), part2u.begin(), part2u.end());
-            rv = checkword(scw, info, root);
+            rv = checkword(scw, info, root, suggest_start);
             if (rv)
               break;
           } else {
             mkinitcap2(part2, sunicw);
             scw = part1 + part2;
-            rv = checkword(scw, info, root);
+            rv = checkword(scw, info, root, suggest_start);
             if (rv)
               break;
           }
           mkinitcap2(scw, sunicw);
-          rv = checkword(scw, info, root);
+          rv = checkword(scw, info, root, suggest_start);
           if (rv)
             break;
         }
@@ -597,18 +609,18 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
 
         mkallsmall2(scw, sunicw);
         std::string u8buffer(scw);
-        rv = spellsharps(u8buffer, 0, 0, 0, info, root);
+        rv = spellsharps(u8buffer, 0, 0, 0, info, root, suggest_start);
         if (!rv) {
           mkinitcap2(scw, sunicw);
-          rv = spellsharps(scw, 0, 0, 0, info, root);
+          rv = spellsharps(scw, 0, 0, 0, info, root, suggest_start);
         }
         if ((abbv) && !(rv)) {
           u8buffer.push_back('.');
-          rv = spellsharps(u8buffer, 0, 0, 0, info, root);
+          rv = spellsharps(u8buffer, 0, 0, 0, info, root, suggest_start);
           if (!rv) {
             u8buffer = std::string(scw);
             u8buffer.push_back('.');
-            rv = spellsharps(u8buffer, 0, 0, 0, info, root);
+            rv = spellsharps(u8buffer, 0, 0, 0, info, root, suggest_start);
           }
         }
         if (rv)
@@ -628,7 +640,7 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
       }
       if (captype == INITCAP)
         *info |= SPELL_INITCAP;
-      rv = checkword(scw, info, root);
+      rv = checkword(scw, info, root, suggest_start);
       if (captype == INITCAP)
         *info &= ~SPELL_INITCAP;
       // forbid bad capitalization
@@ -647,16 +659,16 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
       std::string u8buffer(scw);
       mkinitcap2(scw, sunicw);
 
-      rv = checkword(u8buffer, info, root);
+      rv = checkword(u8buffer, info, root, suggest_start);
       if (abbv && !rv) {
         u8buffer.push_back('.');
-        rv = checkword(u8buffer, info, root);
+        rv = checkword(u8buffer, info, root, suggest_start);
         if (!rv) {
           u8buffer = scw;
           u8buffer.push_back('.');
           if (captype == INITCAP)
             *info |= SPELL_INITCAP;
-          rv = checkword(u8buffer, info, root);
+          rv = checkword(u8buffer, info, root, suggest_start);
           if (captype == INITCAP)
             *info &= ~SPELL_INITCAP;
           if (rv && is_keepcase(rv) && (captype == ALLCAP))
@@ -701,7 +713,7 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
         pos += j.size();
       }
     }
-    if (nbr >= 10)
+    if (nbr >= MAXBREAKDEPTH)
       return false;
 
     // check boundary patterns (^begin and end$)
@@ -711,7 +723,7 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
         continue;
 
       if (j[0] == '^' &&
-          scw.compare(0, plen - 1, j, 1, plen -1) == 0 && spell(scw.substr(plen - 1), candidate_stack))
+          scw.compare(0, plen - 1, j, 1, plen -1) == 0 && spell(scw.substr(plen - 1), candidate_stack, NULL, NULL, suggest_start))
       {
         if (info)
           *info |= SPELL_COMPOUND;
@@ -722,7 +734,7 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
           scw.compare(wl - plen + 1, plen - 1, j, 0, plen - 1) == 0) {
         std::string suffix(scw.substr(wl - plen + 1));
         scw.resize(wl - plen + 1);
-        if (spell(scw, candidate_stack))
+        if (spell(scw, candidate_stack, NULL, NULL, suggest_start))
         {
           if (info)
             *info |= SPELL_COMPOUND;
@@ -743,12 +755,12 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
         if (found2 > 0 && (found2 < wl - plen))
             found = found2;
         std::string substring(scw.substr(found + plen));
-        if (!spell(substring, candidate_stack))
+        if (!spell(substring, candidate_stack, NULL, NULL, suggest_start))
           continue;
         std::string suffix(scw.substr(found));
         scw.resize(found);
         // examine 2 sides of the break point
-        if (spell(scw, candidate_stack))
+        if (spell(scw, candidate_stack, NULL, NULL, suggest_start))
         {
           if (info)
             *info |= SPELL_COMPOUND;
@@ -760,7 +772,7 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
         if (langnum == LANG_hu && j == "-") {
           suffix = scw.substr(found + 1);
           scw.resize(found + 1);
-          if (spell(scw, candidate_stack))
+          if (spell(scw, candidate_stack, NULL, NULL, suggest_start))
           {
             if (info)
               *info |= SPELL_COMPOUND;
@@ -776,12 +788,12 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
     for (auto& j : wordbreak) {
       size_t plen = j.size(), found = scw.find(j);
       if ((found > 0) && (found < wl - plen)) {
-        if (!spell(scw.substr(found + plen), candidate_stack))
+        if (!spell(scw.substr(found + plen), candidate_stack, NULL, NULL, suggest_start))
           continue;
         std::string suffix(scw.substr(found));
         scw.resize(found);
         // examine 2 sides of the break point
-        if (spell(scw, candidate_stack))
+        if (spell(scw, candidate_stack, NULL, NULL, suggest_start))
         {
           if (info)
             *info |= SPELL_COMPOUND;
@@ -793,7 +805,7 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
         if (langnum == LANG_hu && j == "-") {
           suffix = scw.substr(found + 1);
           scw.resize(found + 1);
-          if (spell(scw, candidate_stack))
+          if (spell(scw, candidate_stack, NULL, NULL, suggest_start))
           {
             if (info)
               *info |= SPELL_COMPOUND;
@@ -809,7 +821,12 @@ bool HunspellImpl::spell_internal(const std::string& word, std::vector<std::stri
   return false;
 }
 
-struct hentry* HunspellImpl::checkword(const std::string& w, int* info, std::string* root) {
+struct hentry* HunspellImpl::checkword(const std::string& w, int* info, std::string* root,
+                                       std::chrono::steady_clock::time_point suggest_start) {
+  // check overall suggest time limit
+  if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
+    return NULL;
+
   std::string word;
 
   // remove IGNORE characters from the string
@@ -949,7 +966,7 @@ struct hentry* HunspellImpl::checkword(const std::string& w, int* info, std::str
 #define MAX_CANDIDATE_STACK_DEPTH 2048
 #endif
 
-std::vector<std::string> HunspellImpl::suggest(const std::string& word, std::vector<std::string>& suggest_candidate_stack) {
+std::vector<std::string> HunspellImpl::suggest(const std::string& word, std::vector<std::string>& suggest_candidate_stack, std::chrono::steady_clock::time_point suggest_start) {
 
   if (suggest_candidate_stack.size() > MAX_CANDIDATE_STACK_DEPTH || // apply a fairly arbitrary depth limit
       // something very broken if suggest ends up calling itself with the same word
@@ -957,13 +974,16 @@ std::vector<std::string> HunspellImpl::suggest(const std::string& word, std::vec
     return { };
   }
 
+  if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
+    return { };
+
   bool capwords;
   size_t abbv;
   int captype;
   std::vector<std::string> spell_candidate_stack;
   suggest_candidate_stack.push_back(word);
   std::vector<std::string> slst = suggest_internal(word, spell_candidate_stack, suggest_candidate_stack,
-		                                   capwords, abbv, captype);
+		                                   capwords, abbv, captype, suggest_start);
   suggest_candidate_stack.pop_back();
   // word reversing wrapper for complex prefixes
   if (complexprefixes) {
@@ -995,7 +1015,7 @@ std::vector<std::string> HunspellImpl::suggest(const std::string& word, std::vec
       case ALLCAP: {
         size_t l = 0;
         for (size_t j = 0; j < slst.size(); ++j) {
-          if (slst[j].find(' ') == std::string::npos && !spell(slst[j], spell_candidate_stack)) {
+          if (slst[j].find(' ') == std::string::npos && !spell(slst[j], spell_candidate_stack, NULL, NULL, suggest_start)) {
             std::string s;
             std::vector<w_char> w;
             if (utf8) {
@@ -1004,12 +1024,12 @@ std::vector<std::string> HunspellImpl::suggest(const std::string& word, std::vec
               s = slst[j];
             }
             mkallsmall2(s, w);
-            if (spell(s, spell_candidate_stack)) {
+            if (spell(s, spell_candidate_stack, NULL, NULL, suggest_start)) {
               slst[l] = s;
               ++l;
             } else {
               mkinitcap2(s, w);
-              if (spell(s, spell_candidate_stack)) {
+              if (spell(s, spell_candidate_stack, NULL, NULL, suggest_start)) {
                 slst[l] = s;
                 ++l;
               }
@@ -1053,13 +1073,15 @@ std::vector<std::string> HunspellImpl::suggest(const std::string& word, std::vec
 
 std::vector<std::string> HunspellImpl::suggest(const std::string& word) {
   std::vector<std::string> suggest_candidate_stack;
-  return suggest(word, suggest_candidate_stack);
+  auto suggest_start = std::chrono::steady_clock::now();
+  return suggest(word, suggest_candidate_stack, suggest_start);
 }
 
 std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
         std::vector<std::string>& spell_candidate_stack,
         std::vector<std::string>& suggest_candidate_stack,
-        bool& capwords, size_t& abbv, int& captype) {
+        bool& capwords, size_t& abbv, int& captype,
+        std::chrono::steady_clock::time_point suggest_start) {
   captype = NOCAP;
   abbv = 0;
   capwords = false;
@@ -1108,14 +1130,10 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
 
   bool good = false;
 
-  clock_t timelimit;
-  // initialize in every suggestion call
-  timelimit = clock();
-
   // check capitalized form for FORCEUCASE
   if (pAMgr && captype == NOCAP && pAMgr->get_forceucase()) {
     int info = SPELL_ORIGCAP;
-    if (checkword(scw, &info, NULL)) {
+    if (checkword(scw, &info, NULL, suggest_start)) {
       std::string form(scw);
       mkinitcap(form);
       slst.push_back(form);
@@ -1126,13 +1144,13 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
   switch (captype) {
     case NOCAP: {
       good |= pSMgr->suggest(slst, scw, &onlycmpdsug);
-      if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
           return slst;
       if (abbv) {
         std::string wspace(scw);
         wspace.push_back('.');
         good |= pSMgr->suggest(slst, wspace, &onlycmpdsug);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
       }
       break;
@@ -1141,12 +1159,12 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
     case INITCAP: {
       capwords = true;
       good |= pSMgr->suggest(slst, scw, &onlycmpdsug);
-      if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
           return slst;
       std::string wspace(scw);
       mkallsmall2(wspace, sunicw);
       good |= pSMgr->suggest(slst, wspace, &onlycmpdsug);
-      if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
           return slst;
       break;
     }
@@ -1155,7 +1173,7 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
       /* FALLTHROUGH */
     case HUHCAP: {
       good |= pSMgr->suggest(slst, scw, &onlycmpdsug);
-      if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
           return slst;
       // something.The -> something. The
       size_t dot_pos = scw.find('.');
@@ -1183,23 +1201,23 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
         wspace = scw;
         mkinitsmall2(wspace, sunicw);
         good |= pSMgr->suggest(slst, wspace, &onlycmpdsug);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
       }
       wspace = scw;
       mkallsmall2(wspace, sunicw);
-      if (spell(wspace, spell_candidate_stack))
+      if (spell(wspace, spell_candidate_stack, NULL, NULL, suggest_start))
         insert_sug(slst, wspace);
       size_t prevns = slst.size();
       good |= pSMgr->suggest(slst, wspace, &onlycmpdsug);
-      if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
           return slst;
       if (captype == HUHINITCAP) {
         mkinitcap2(wspace, sunicw);
-        if (spell(wspace, spell_candidate_stack))
+        if (spell(wspace, spell_candidate_stack, NULL, NULL, suggest_start))
           insert_sug(slst, wspace);
         good |= pSMgr->suggest(slst, wspace, &onlycmpdsug);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
       }
       // aNew -> "a New" (instead of "a new")
@@ -1228,13 +1246,13 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
       std::string wspace(scw);
       mkallsmall2(wspace, sunicw);
       good |= pSMgr->suggest(slst, wspace, &onlycmpdsug);
-      if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
           return slst;
-      if (pAMgr && pAMgr->get_keepcase() && spell(wspace, spell_candidate_stack))
+      if (pAMgr && pAMgr->get_keepcase() && spell(wspace, spell_candidate_stack, NULL, NULL, suggest_start))
         insert_sug(slst, wspace);
       mkinitcap2(wspace, sunicw);
       good |= pSMgr->suggest(slst, wspace, &onlycmpdsug);
-      if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
           return slst;
       for (auto& j : slst) {
         mkallcap(j);
@@ -1258,7 +1276,7 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
         int info;
         std::string w(j.substr(0, pos));
         w.append(j.substr(pos + 1));
-        (void)spell(w, spell_candidate_stack, &info, NULL);
+        (void)spell(w, spell_candidate_stack, &info, NULL, suggest_start);
         if ((info & SPELL_COMPOUND) && (info & SPELL_FORBIDDEN)) {
 	        j[pos] = ' ';
         } else
@@ -1272,7 +1290,7 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
     switch (captype) {
       case NOCAP: {
         pSMgr->ngsuggest(slst, scw.c_str(), m_HMgrs, NOCAP);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
         break;
       }
@@ -1284,7 +1302,7 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
         std::string wspace(scw);
         mkallsmall2(wspace, sunicw);
         pSMgr->ngsuggest(slst, wspace.c_str(), m_HMgrs, HUHCAP);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
         break;
       }
@@ -1293,7 +1311,7 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
         std::string wspace(scw);
         mkallsmall2(wspace, sunicw);
         pSMgr->ngsuggest(slst, wspace.c_str(), m_HMgrs, INITCAP);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
         break;
       }
@@ -1302,7 +1320,7 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
         mkallsmall2(wspace, sunicw);
         size_t oldns = slst.size();
         pSMgr->ngsuggest(slst, wspace.c_str(), m_HMgrs, ALLCAP);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
         for (size_t j = oldns; j < slst.size(); ++j) {
           mkallcap(slst[j]);
@@ -1333,9 +1351,9 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
       if (dash_pos == scw.size())
         last = 1;
       std::string chunk = scw.substr(prev_pos, dash_pos - prev_pos);
-      if (chunk != word && !spell(chunk, spell_candidate_stack)) {
-        std::vector<std::string> nlst = suggest(chunk, suggest_candidate_stack);
-        if (clock() > timelimit + TIMELIMIT_GLOBAL)
+      if (chunk != word && !spell(chunk, spell_candidate_stack, NULL, NULL, suggest_start)) {
+        std::vector<std::string> nlst = suggest(chunk, suggest_candidate_stack, suggest_start);
+        if (std::chrono::steady_clock::now() - suggest_start > TIMELIMIT_GLOBAL_MS)
             return slst;
         for (auto j = nlst.rbegin(); j != nlst.rend(); ++j) {
           std::string wspace = scw.substr(0, prev_pos);
@@ -1346,7 +1364,7 @@ std::vector<std::string> HunspellImpl::suggest_internal(const std::string& word,
           }
           int info = 0;
           if (pAMgr && pAMgr->get_forbiddenword())
-            checkword(wspace, &info, NULL);
+            checkword(wspace, &info, NULL, suggest_start);
           if (!(info & SPELL_FORBIDDEN))
             insert_sug(slst, wspace);
         }
@@ -1859,7 +1877,7 @@ std::string::size_type HunspellImpl::get_xml_pos(const std::string& s, std::stri
     pos = s.find(attr, pos);
     if (pos == std::string::npos || pos >= endpos)
       return std::string::npos;
-    if (s[pos - 1] == ' ' || s[pos - 1] == '\n')
+    if (pos == 0 || s[pos - 1] == ' ' || s[pos - 1] == '\n')
       break;
     pos += strlen(attr);
   }
@@ -2135,7 +2153,8 @@ int Hunspell::add_dic(const char* dpath, const char* key) {
 
 bool Hunspell::spell(const std::string& word, int* info, std::string* root) {
   std::vector<std::string> candidate_stack;
-  return m_Impl->spell(word, candidate_stack, info, root);
+  return m_Impl->spell(word, candidate_stack, info, root,
+                       std::chrono::steady_clock::now());
 }
 
 std::vector<std::string> Hunspell::suggest(const std::string& word) {

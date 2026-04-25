@@ -636,9 +636,12 @@ static bool is_zipped_odf(TextParser* parser, const char* extension) {
 }
 
 static bool secure_filename(const char* filename) {
-  const char* hasapostrophe = strchr(filename, '\'');
-  if (hasapostrophe)
-    return false;
+  for (const char* p = filename; *p; ++p) {
+    if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+          (*p >= '0' && *p <= '9') || *p == '.' || *p == '-' ||
+          *p == '_' || *p == '/' || *p == ' ' || *p == '~'))
+      return false;
+  }
   return true;
 }
 
@@ -649,7 +652,7 @@ char* mymkdtemp(char *templ) {
   if (!odftmpdir) {
     return NULL;
   }
-  if (system((std::string("mkdir ") + odftmpdir).c_str()) != 0) {
+  if (system((std::string("mkdir \"") + odftmpdir + "\"").c_str()) != 0) {
     return NULL;
   }
   return odftmpdir;
@@ -669,6 +672,8 @@ void pipe_interface(Hunspell** pMS, int format, FILE* fileid, char* filename) {
   int d = 0;
   char* odftmpdir = NULL;
 
+  bool io_is_utf8 = io_enc && strcmp(io_enc, "UTF-8") == 0;
+
   std::string filename_prefix = (multiple_files) ? filename + std::string(": ") : "";
 
   const char* extension = (filename) ? basename(filename, '.') : NULL;
@@ -683,18 +688,22 @@ void pipe_interface(Hunspell** pMS, int format, FILE* fileid, char* filename) {
       perror(gettext("Can't create tmp dir"));
       exit(1);
     }
+    if (!secure_filename(filename)) {
+      fprintf(stderr, gettext("Can't open %s.\n"), filename);
+      if (system((std::string("rmdir \"") + odftmpdir + "\"").c_str()) != 0) {
+        perror("temp dir delete failed");
+      }
+      exit(1);
+    }
     // break 1-line XML of zipped ODT documents at </style:style> and </text:p>
     // to avoid tokenization problems (fgets could stop within an XML tag)
     std::ostringstream sbuf;
     sbuf << "unzip -p \"" << filename << "\" content.xml | sed "
             "\"s/\\(<\\/text:p>\\|<\\/style:style>\\)\\(.\\)/\\1\\n\\2/g;s/<\\/\\?text:span[^>]*>//g\" "
             ">" << odftmpdir << "/content.xml";
-    if (!secure_filename(filename) || system(sbuf.str().c_str()) != 0) {
-      if (secure_filename(filename))
-        perror(gettext("Can't open inputfile"));
-      else
-        fprintf(stderr, gettext("Can't open %s.\n"), filename);
-      if (system((std::string("rmdir ") + odftmpdir).c_str()) != 0) {
+    if (system(sbuf.str().c_str()) != 0) {
+      perror(gettext("Can't open inputfile"));
+      if (system((std::string("rmdir \"") + odftmpdir + "\"").c_str()) != 0) {
         perror("temp dir delete failed");
       }
       exit(1);
@@ -704,7 +713,7 @@ void pipe_interface(Hunspell** pMS, int format, FILE* fileid, char* filename) {
     fileid = fopen(file.c_str(), "r");
     if (fileid == NULL) {
       perror(gettext("Can't open inputfile"));
-      if (system((std::string("rmdir ") + odftmpdir).c_str()) != 0) {
+      if (system((std::string("rmdir \"") + odftmpdir + "\"").c_str()) != 0) {
         perror("temp dir delete failed");
       }
       exit(1);
@@ -806,6 +815,8 @@ nextline:
 
     if (pos >= 0) {
       parser->put_line(buf + pos);
+      int prev_byte_offset = 0;
+      int prev_char_offset = 0;
       std::string token;
       while (parser->next_token(token)) {
         token = parser->get_word(token);
@@ -855,16 +866,22 @@ nextline:
               std::vector<std::string> wlst =
                   pMS[d]->suggest(chenc(parser->get_word(token), io_enc, dic_enc[d]));
               if (!wlst.empty()) {
-                parser->change_token(chenc(wlst[0], dic_enc[d], io_enc).c_str());
+                std::string best_io = chenc(wlst[0], dic_enc[d], io_enc);
+                std::string orig_token(token);
+                parser->change_token(best_io.c_str());
+                // consume the replacement token to avoid re-checking it,
+                // which can cause an infinite loop if the suggestion is
+                // also misspelled
+                parser->next_token(token);
                 if (filter_mode == AUTO3) {
                   fprintf(f, "%s:%d: Locate: %s | Try: %s\n", currentfilename,
-                          lineno, token.c_str(), chenc(wlst[0], dic_enc[d], io_enc).c_str());
+                          lineno, orig_token.c_str(), best_io.c_str());
                 } else if (filter_mode == AUTO2) {
-                  fprintf(f, "%ds/%s/%s/g; # %s\n", lineno, token.c_str(),
-                          chenc(wlst[0], dic_enc[d], io_enc).c_str(), buf);
+                  fprintf(f, "%ds/%s/%s/g; # %s\n", lineno, orig_token.c_str(),
+                          best_io.c_str(), buf);
                 } else {
                   fprintf(f, gettext("Line %d: %s -> "), lineno,
-                          chenc(token, io_enc, ui_enc).c_str());
+                          chenc(orig_token, io_enc, ui_enc).c_str());
                   fprintf(f, "%s\n", chenc(wlst[0], dic_enc[d], ui_enc).c_str());
                 }
               }
@@ -936,25 +953,30 @@ nextline:
               fflush(stdout);
             } else {
               int byte_offset = parser->get_tokenpos() + pos;
-              int char_offset = 0;
-              if (strcmp(io_enc, "UTF-8") == 0) {
-                for (int i = 0; i < byte_offset; i++) {
+              int char_offset = prev_char_offset;
+              if (io_is_utf8) {
+                for (int i = prev_byte_offset; i < byte_offset; i++) {
                   if ((buf[i] & 0xc0) != 0x80)
                     char_offset++;
                 }
               } else {
                 char_offset = byte_offset;
               }
+              prev_byte_offset = byte_offset;
+              prev_char_offset = char_offset;
               std::vector<std::string> wlst =
                 pMS[d]->suggest(chenc(token, io_enc, dic_enc[d]));
+              for (size_t j = 0; j < wlst.size(); ++j) {
+                wlst[j] = chenc(wlst[j], dic_enc[d], io_enc);
+              }
               if (wlst.empty()) {
                 fprintf(stdout, "# %s %d", token.c_str(), char_offset);
               } else {
                 fprintf(stdout, "& %s %u %d: ", token.c_str(), static_cast<unsigned int>(wlst.size()), char_offset);
-                fprintf(stdout, "%s", chenc(wlst[0], dic_enc[d], io_enc).c_str());
+                fprintf(stdout, "%s", wlst[0].c_str());
               }
               for (size_t j = 1; j < wlst.size(); ++j) {
-                  fprintf(stdout, ", %s", chenc(wlst[j], dic_enc[d], io_enc).c_str());
+                  fprintf(stdout, ", %s", wlst[j].c_str());
               }
               fprintf(stdout, "\n");
               fflush(stdout);
@@ -975,27 +997,33 @@ nextline:
               fflush(stdout);
             } else {
               int byte_offset = parser->get_tokenpos() + pos;
-              int char_offset = 0;
-              if (strcmp(io_enc, "UTF-8") == 0) {
-                for (int i = 0; i < byte_offset; i++) {
+              int char_offset = prev_char_offset;
+              if (io_is_utf8) {
+                for (int i = prev_byte_offset; i < byte_offset; i++) {
                   if ((buf[i] & 0xc0) != 0x80)
                     char_offset++;
                 }
               } else {
                 char_offset = byte_offset;
               }
+              prev_byte_offset = byte_offset;
+              prev_char_offset = char_offset;
               std::vector<std::string> wlst =
                 pMS[d]->suggest(chenc(token, io_enc, dic_enc[d]));
+              for (size_t j = 0; j < wlst.size(); ++j) {
+                wlst[j] = chenc(wlst[j], dic_enc[d], ui_enc);
+              }
+              std::string token_ui = chenc(token, io_enc, ui_enc);
               if (wlst.empty()) {
-                fprintf(stdout, "# %s %d", chenc(token, io_enc, ui_enc).c_str(),
+                fprintf(stdout, "# %s %d", token_ui.c_str(),
                         char_offset);
               } else {
-                fprintf(stdout, "& %s %u %d: ", chenc(token, io_enc, ui_enc).c_str(),
+                fprintf(stdout, "& %s %u %d: ", token_ui.c_str(),
                         static_cast<unsigned int>(wlst.size()), char_offset);
-                fprintf(stdout, "%s", chenc(wlst[0], dic_enc[d], ui_enc).c_str());
+                fprintf(stdout, "%s", wlst[0].c_str());
               }
               for (size_t j = 1; j < wlst.size(); ++j) {
-                fprintf(stdout, ", %s", chenc(wlst[j], dic_enc[d], ui_enc).c_str());
+                fprintf(stdout, ", %s", wlst[j].c_str());
               }
               fprintf(stdout, "\n");
               fflush(stdout);
@@ -1035,7 +1063,7 @@ nextline:
       perror("temp file delete failed");
     }
     sbuf.str("");
-    sbuf << "rmdir " << odftmpdir;
+    sbuf << "rmdir \"" << odftmpdir << "\"";
     if (system(sbuf.str().c_str()) != 0) {
       perror("temp dir delete failed");
     }
@@ -1072,6 +1100,7 @@ static int rl_escape(int count, int key) {
 #ifdef HAVE_CURSES_H
 int expand_tab(std::string& dest, const std::string& in_src) {
   dest.clear();
+  dest.reserve(in_src.size());
   const char *src = in_src.c_str();
   int u8 = ((ui_enc != NULL) && (strcmp(ui_enc, "UTF-8") == 0)) ? 1 : 0;
   int chpos = 0;
@@ -1598,19 +1627,22 @@ void interactive_interface(Hunspell** pMS, char* filename, int format) {
       exit(1);
     }
     fclose(text);
+    if (!secure_filename(filename)) {
+      fprintf(stderr, gettext("Can't open %s.\n"), filename);
+      endwin();
+      (void)system((std::string("rmdir \"") + odftmpdir + "\"").c_str());
+      exit(1);
+    }
     // break 1-line XML of zipped ODT documents at </style:style> and </text:p>
     // to avoid tokenization problems (fgets could stop within an XML tag)
     std::ostringstream sbuf;
     sbuf << "unzip -p \"" << filename << "\" content.xml | sed "
             "\"s/\\(<\\/text:p>\\|<\\/style:style>\\)\\(.\\)/\\1\\n\\2/g\" "
             ">" << odftmpdir << "/content.xml";
-    if (!secure_filename(filename) || system(sbuf.str().c_str()) != 0) {
-      if (secure_filename(filename))
-        perror(gettext("Can't open inputfile"));
-      else
-        fprintf(stderr, gettext("Can't open %s.\n"), filename);
+    if (system(sbuf.str().c_str()) != 0) {
+      perror(gettext("Can't open inputfile"));
       endwin();
-      (void)system((std::string("rmdir ") + odftmpdir).c_str());
+      (void)system((std::string("rmdir \"") + odftmpdir + "\"").c_str());
       exit(1);
     }
     odffilename = filename;
@@ -1621,7 +1653,7 @@ void interactive_interface(Hunspell** pMS, char* filename, int format) {
     if (!text) {
       perror(gettext("Can't open inputfile"));
       endwin();
-      (void)system((std::string("rmdir ") + odftmpdir).c_str());
+      (void)system((std::string("rmdir \"") + odftmpdir + "\"").c_str());
       exit(1);
     }
   }
@@ -1651,7 +1683,7 @@ void interactive_interface(Hunspell** pMS, char* filename, int format) {
               perror("temp file delete failed");
             }
             std::ostringstream sbuf;
-            sbuf << "rmdir " << odftmpdir;
+            sbuf << "rmdir \"" << odftmpdir << "\"";
             if (system(sbuf.str().c_str()) != 0) {
               perror("temp dir delete failed");
             }
@@ -1682,9 +1714,9 @@ void interactive_interface(Hunspell** pMS, char* filename, int format) {
           perror("write failed");
       }
       fclose(text);
-      if (bZippedOdf && odffilename) {
+      if (bZippedOdf && odffilename && secure_filename(odffilename)) {
         std::ostringstream sbuf;
-        sbuf << "zip -j '" << odffilename << "' " << filename;
+        sbuf << "zip -j \"" << odffilename << "\" \"" << filename << "\"";
         if (system(sbuf.str().c_str()) != 0)
           perror("write failed");
       }
@@ -1696,7 +1728,7 @@ void interactive_interface(Hunspell** pMS, char* filename, int format) {
       perror("temp file delete failed");
     }
     std::ostringstream sbuf;
-    sbuf << "rmdir " << odftmpdir;
+    sbuf << "rmdir \"" << odftmpdir << "\"";
     if (system(sbuf.str().c_str()) != 0) {
       perror("temp dir delete failed");
     }

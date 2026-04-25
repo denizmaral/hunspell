@@ -83,6 +83,7 @@
 #endif
 
 #define MAXSHARPS 5
+#define MAXBREAKDEPTH 10
 
 #ifndef MAXWORDLEN
 #define MAXWORDLEN 100
@@ -197,7 +198,7 @@ class LIBHUNSPELL_DLL_EXPORTED Hunspell {
 
   int add(const std::string& word);
 
-  int add_with_flags(const std::string& word, const std::string& flags, const std::string& desc = NULL);
+  int add_with_flags(const std::string& word, const std::string& flags, const std::string& desc = "");
 
   /* add word to the run-time dictionary with affix flags of
    * the example (a dictionary word): Hunspell will recognize

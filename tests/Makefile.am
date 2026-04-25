@@ -2,6 +2,12 @@
 
 SUBDIRS = suggestiontest
 
+AM_CPPFLAGS = -I$(top_srcdir)/src/hunspell
+
+check_PROGRAMS = gh1032
+gh1032_SOURCES = gh1032.cxx
+gh1032_LDADD = $(top_builddir)/src/hunspell/libhunspell-1.7.la
+
 TEST_EXTENSIONS = .dic
 AM_TESTS_ENVIRONMENT = export HUNSPELL=$(top_builddir)/src/tools/hunspell; \
                        export ANALYZE=$(top_builddir)/src/tools/analyze; \
@@ -138,7 +144,18 @@ hu.dic \
 warn.dic \
 timelimit.dic \
 ignoresug.dic \
-limit-multiple-compounding.dic
+limit-multiple-compounding.dic \
+iconv_break_overflow.dic \
+gh1076.dic \
+gh1032.test \
+gh1086.test \
+gh1018.test \
+gh1044.test \
+gh646.test \
+ofz51432.test \
+ofz5627151457255424.test \
+gh1095.test \
+compound_wnum_overflow.test
 
 clean-local:
 	-rm -rf testSubDir
@@ -653,6 +670,7 @@ warn.good \
 timelimit.aff \
 timelimit.dic \
 timelimit.good \
+timelimit.sug \
 timelimit.wrong \
 ignoresug.aff \
 ignoresug.dic \
@@ -662,5 +680,42 @@ limit-multiple-compounding.aff \
 limit-multiple-compounding.dic \
 limit-multiple-compounding.good \
 limit-multiple-compounding.wrong \
-\
+iconv_break_overflow.aff \
+iconv_break_overflow.dic \
+iconv_break_overflow.wrong \
+compound_wnum_overflow.aff \
+compound_wnum_overflow.dic \
+compound_wnum_overflow.test \
+gh1032.cxx \
+gh1032.aff \
+gh1032.dic \
+gh1032.test \
+gh1086.aff \
+gh1086.dic \
+gh1086.txt \
+gh1086.test \
+gh1018.aff \
+gh1018.dic \
+gh1018.test \
+gh1044.aff \
+gh1044.dic \
+gh1044.words \
+gh1044.test \
+gh646.aff \
+gh646.dic \
+gh646.txt \
+gh646.test \
+gh1076.aff \
+gh1076.dic \
+gh1076.good \
+gh1076.wrong \
+ofz51432.aff \
+ofz51432.dic \
+ofz51432.test \
+ofz5627151457255424.aff \
+ofz5627151457255424.dic \
+ofz5627151457255424.test \
+gh1095.aff \
+gh1095.dic \
+gh1095.test \
 utf8_nonbmp.test

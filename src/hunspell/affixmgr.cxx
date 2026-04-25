@@ -1359,8 +1359,8 @@ int AffixMgr::cpdcase_check(const std::string& word, int pos) {
     u8_u16(pair_u, pair);
     unsigned short a = pair_u.size() > 1 ? (unsigned short)pair_u[1] : 0,
                    b = !pair_u.empty() ? (unsigned short)pair_u[0] : 0;
-    if (((unicodetoupper(a, langnum) == a) ||
-         (unicodetoupper(b, langnum) == b)) &&
+    if (((unicodetoupper(a, langnum) == a && unicodetolower(a, langnum) != a) ||
+         (unicodetoupper(b, langnum) == b && unicodetolower(b, langnum) != b)) &&
         (a != '-') && (b != '-'))
       return 1;
   } else {
@@ -1602,8 +1602,7 @@ struct hentry* AffixMgr::compound_check(const std::string& word,
       clock_time_start = clock_now;
       timelimit_exceeded = false;
   }
-  else if (std::chrono::duration_cast<std::chrono::milliseconds>(clock_now - clock_time_start).count()
-            > static_cast<double>(TIMELIMIT) * CLOCKS_PER_SEC * 1000)
+  else if (clock_now - clock_time_start > TIMELIMIT_MS)
       timelimit_exceeded = true;
 
   setcminmax(&cmin, &cmax, word.c_str(), len);
@@ -1630,8 +1629,11 @@ struct hentry* AffixMgr::compound_check(const std::string& word,
 
       do {  // simplified checkcompoundpattern loop
 
-        if (timelimit_exceeded)
+        if (timelimit_exceeded ||
+            std::chrono::steady_clock::now() - clock_time_start > TIMELIMIT_MS) {
+          timelimit_exceeded = true;
           return 0;
+        }
 
         if (scpd > 0) {
           for (; scpd <= checkcpdtable.size() &&
@@ -1661,7 +1663,7 @@ struct hentry* AffixMgr::compound_check(const std::string& word,
           cmax = len - cpdmin + 1;
         }
 
-	if (i > st.size())
+	if (i >= st.size())
 	    return NULL;
 
         ch = st[i];
@@ -2101,7 +2103,7 @@ struct hentry* AffixMgr::compound_check(const std::string& word,
 
             // perhaps second word is a compound word (recursive call)
             // (only if SPELL_COMPOUND_2 is not set and maxwordnum is not exceeded)
-            if ((!info || !(*info & SPELL_COMPOUND_2)) && wordnum + 2 < maxwordnum) {
+            if ((!info || !(*info & SPELL_COMPOUND_2)) && wordnum + 2 < maxwordnum && wnum + 1 < maxwordnum) {
               rv = compound_check(st.substr(i), wordnum + 1,
                                   numsyllable, maxwordnum, wnum + 1, words, rwords, 0,
                                   is_sug, info);
@@ -2231,8 +2233,7 @@ int AffixMgr::compound_check_morph(const std::string& word,
       clock_time_start = clock_now;
       timelimit_exceeded = false;
   }
-  else if (std::chrono::duration_cast<std::chrono::milliseconds>(clock_now - clock_time_start).count()
-            > static_cast<double>(TIMELIMIT) * CLOCKS_PER_SEC * 1000)
+  else if (clock_now - clock_time_start > TIMELIMIT_MS)
       timelimit_exceeded = true;
 
   setcminmax(&cmin, &cmax, word.c_str(), len);
@@ -2259,6 +2260,9 @@ int AffixMgr::compound_check_morph(const std::string& word,
       oldnumsyllable = numsyllable;
       oldwordnum = wordnum;
       checked_prefix = 0;
+
+      if (i >= st.size())
+        return 0;
 
       ch = st[i];
       st[i] = '\0';
@@ -2703,7 +2707,7 @@ int AffixMgr::compound_check_morph(const std::string& word,
         wordnum = oldwordnum2;
 
         // perhaps second word is a compound word (recursive call)
-        if ((wordnum + 2 < maxwordnum) && (ok == 0)) {
+        if ((wordnum + 2 < maxwordnum) && (wnum + 1 < maxwordnum) && (ok == 0)) {
           compound_check_morph(word.substr(i), wordnum + 1,
                                numsyllable, maxwordnum, wnum + 1, words, rwords, 0,
                                result, &presult);
@@ -4366,32 +4370,33 @@ void AffixMgr::reverse_condition(std::string& piece) {
       return;
 
   int neg = 0;
-  for (auto k = piece.rbegin(); k != piece.rend(); ++k) {
-    switch (*k) {
+  // iterate backwards; k wraps to npos (SIZE_MAX) when decremented past 0
+  for (size_t k = piece.size() - 1; k != std::string::npos; --k) {
+    switch (piece[k]) {
       case '[': {
         if (neg)
-          *(k - 1) = '[';
+          piece[k + 1] = '[';
         else
-          *k = ']';
+          piece[k] = ']';
         break;
       }
       case ']': {
-        *k = '[';
+        piece[k] = '[';
         if (neg)
-          *(k - 1) = '^';
+          piece[k + 1] = '^';
         neg = 0;
         break;
       }
       case '^': {
-        if (*(k - 1) == ']')
+        if (piece[k + 1] == ']')
           neg = 1;
         else if (neg)
-          *(k - 1) = *k;
+          piece[k + 1] = piece[k];
         break;
       }
       default: {
         if (neg)
-          *(k - 1) = *k;
+          piece[k + 1] = piece[k];
       }
     }
   }
